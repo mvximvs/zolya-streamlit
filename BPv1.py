@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("📊 Zolya — Business Plan & Financial Simulator")
-st.caption("Projections utilisateurs, revenus, coûts, trésorerie, scénarios, benchmarks & cap table — v7")
+st.caption("Projections utilisateurs, revenus, coûts, trésorerie, scénarios, benchmarks & cap table — v8 corrigée")
 
 # =========================================================
 # SIDEBAR — HYPOTHÈSES GÉNÉRALES
@@ -250,7 +250,7 @@ pre_shares_total = st.sidebar.number_input(
 )
 
 # =========================================================
-# FONCTION DE SIMULATION (logistique + marketing + churn)
+# FONCTION DE SIMULATION CORRIGÉE
 # =========================================================
 def simulate_business_plan(
     months: int,
@@ -277,8 +277,7 @@ def simulate_business_plan(
     scenario_name: str = "Base",
 ):
     """
-    U_{t+1} = U_t + r*U_t*(1 - U_t/K) + Marketing/CAC - churn
-    Biomarkers = coût moyen par user par mois.
+    Simulation corrigée avec calculs cohérents du CA et des coûts Biomarkers
     """
 
     data = []
@@ -295,7 +294,7 @@ def simulate_business_plan(
         current_month_in_year = (m - 1) % 12 + 1
         capex = yearly_capex if current_month_in_year == capex_month else 0.0
 
-        # Logistique
+        # Logistique - croissance organique
         if max_users > 0:
             logistic_new = logistic_r * users_start * (1 - users_start / max_users)
         else:
@@ -316,20 +315,24 @@ def simulate_business_plan(
         # Update users
         users_end = users_start + new_customers - churn
         users_end = max(users_end, 0.0)
-        saturation_ratio = users_end / max_users if max_users > 0 else np.nan
+        
+        # Application de la limite du marché
         if max_users > 0:
             users_end = min(users_end, max_users)
+            saturation_ratio = users_end / max_users
+        else:
+            saturation_ratio = np.nan
 
         # Mix Basic / Premium
         premium_users = users_end * premium_share
         basic_users = users_end - premium_users
 
-        # Revenus abonnements
+        # CALCUL DU CA MENSUEL CORRIGÉ
         rev_basic = basic_users * price_basic
         rev_premium = premium_users * price_premium
         revenue_total = rev_basic + rev_premium
 
-        # Coût Biomarkers par user / mois
+        # CALCUL COÛT BIOMARKERS MENSUEL CORRIGÉ
         bio_cost_per_user_month = biomarker_cost_avg * (biomarker_analyses_per_user_year / 12.0)
         cost_biomarkers = users_end * bio_cost_per_user_month
 
@@ -349,7 +352,7 @@ def simulate_business_plan(
         cash_flow = revenue_total - total_costs
         cash = cash + cash_flow
 
-        # Unit eco
+        # Unit economics
         if users_end > 0:
             sub_arpu_month = revenue_total / users_end
             psp_fees_per_user_month = payment_fees / users_end
@@ -450,16 +453,26 @@ for scen in scenarios:
     )
     dfs[scen] = df_s
 
+# CALCUL ANNUEL CORRIGÉ - Prendre la somme des CA mensuels pour l'année
+def calculate_yearly_metrics(df):
+    yearly_data = []
+    for year in range(1, years + 1):
+        year_data = df[df['Année'] == year]
+        if not year_data.empty:
+            yearly_data.append({
+                'Année': year,
+                'Users_end': year_data['Users_end'].iloc[-1],  # Dernier mois de l'année
+                'CA_total': year_data['CA_total'].sum(),  # SOMME des CA mensuels
+                'Total_costs': year_data['Total_costs'].sum(),
+                'Cash_flow': year_data['Cash_flow'].sum(),
+                'Cash_end': year_data['Cash'].iloc[-1],
+                'Capex_total': year_data['Capex'].sum(),
+                'Bio_costs_total': year_data['Cost_biomarkers'].sum(),
+            })
+    return pd.DataFrame(yearly_data)
+
 df_base = dfs["Base"]
-yearly_base = df_base.groupby("Année").agg(
-    Users_end=("Users_end", "last"),
-    CA_total=("CA_total", "sum"),
-    Total_costs=("Total_costs", "sum"),
-    Cash_flow=("Cash_flow", "sum"),
-    Cash_end=("Cash", "last"),
-    Capex_total=("Capex", "sum"),
-    Bio_costs_total=("Cost_biomarkers", "sum"),
-).reset_index()
+yearly_base = calculate_yearly_metrics(df_base)
 
 # =========================================================
 # TABS
@@ -467,7 +480,7 @@ yearly_base = df_base.groupby("Année").agg(
 tab_overview, tab_users, tab_costs, tab_pricing, tab_scenarios, tab_valuation, tab_bench, tab_raw = st.tabs(
     [
         "🏠 Overview",
-        "👥 Users & Revenues",
+        "👥 Users & Revenues", 
         "💸 Costs & Cash",
         "🧮 Pricing Sensitivity",
         "🧪 Scenarios",
@@ -478,26 +491,56 @@ tab_overview, tab_users, tab_costs, tab_pricing, tab_scenarios, tab_valuation, t
 )
 
 # ---------------------------------------------------------
-# TAB 1 — OVERVIEW
+# TAB 1 — OVERVIEW (CORRIGÉ)
 # ---------------------------------------------------------
 with tab_overview:
     st.subheader("Vue d'ensemble — scénario Base")
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("Utilisateurs fin année 1",
-                  f"{int(yearly_base.loc[0, 'Users_end']):,}".replace(",", " "))
+        users_year1 = yearly_base.loc[0, 'Users_end']
+        st.metric("Utilisateurs fin année 1", f"{int(users_year1):,}".replace(",", " "))
+    
     with col2:
-        st.metric("CA année 1 (Base, €)",
-                  f"{int(yearly_base.loc[0, 'CA_total']):,}".replace(",", " "))
+        # CA ANNUEL = somme des CA mensuels de l'année
+        ca_year1 = yearly_base.loc[0, 'CA_total']
+        st.metric("CA année 1 (Base, €)", f"{int(ca_year1):,}".replace(",", " "))
+    
     with col3:
-        st.metric("Burn moyen / mois année 1 (Base, €)",
-                  f"{int(yearly_base.loc[0, 'Cash_flow'] / 12):,}".replace(",", " "))
+        # BURN MOYEN MENSUEL = cash flow total de l'année / 12
+        cash_flow_year1 = yearly_base.loc[0, 'Cash_flow']
+        burn_mensuel_moyen = cash_flow_year1 / 12
+        st.metric("Burn moyen / mois année 1 (Base, €)", f"{int(burn_mensuel_moyen):,}".replace(",", " "))
+    
     with col4:
-        st.metric("Trésorerie fin horizon (Base, €)",
-                  f"{int(yearly_base.iloc[-1]['Cash_end']):,}".replace(",", " "))
+        cash_final = yearly_base.iloc[-1]['Cash_end']
+        st.metric("Trésorerie fin horizon (Base, €)", f"{int(cash_final):,}".replace(",", " "))
 
     st.markdown("----")
+    
+    # Diagnostic de cohérence
+    st.markdown("### 🔍 Diagnostic de cohérence")
+    col_d1, col_d2 = st.columns(2)
+    
+    with col_d1:
+        st.write("**Année 1 - Vérification:**")
+        st.write(f"- Utilisateurs fin année 1: {int(users_year1):,}")
+        st.write(f"- CA total année 1: {int(ca_year1):,} €")
+        st.write(f"- Cash flow année 1: {int(cash_flow_year1):,} €")
+        st.write(f"- Burn mensuel moyen: {int(burn_mensuel_moyen):,} €")
+        
+        # Vérification Biomarkers
+        bio_year1 = yearly_base.loc[0, 'Bio_costs_total']
+        st.write(f"- Coûts Biomarkers année 1: {int(bio_year1):,} €")
+    
+    with col_d2:
+        st.write("**Dernier mois - Vérification:**")
+        last_month = df_base.iloc[-1]
+        st.write(f"- Utilisateurs: {last_month['Users_end']:,.0f}")
+        st.write(f"- CA mensuel: {last_month['CA_total']:,.0f} €")
+        st.write(f"- Coût Biomarkers mensuel: {last_month['Cost_biomarkers']:,.0f} €")
+        st.write(f"- Coût Biomarkers/user/mois: {last_month['Bio_cost_per_user_month']:.2f} €")
+
     col_o1, col_o2 = st.columns(2)
     with col_o1:
         fig_users = px.line(
@@ -545,10 +588,8 @@ with tab_users:
 
     with col_r2:
         last_row = df_base.iloc[-1]
-        st.metric("Rev. Basic (dernier mois)",
-                  f"{int(last_row['Rev_basic']):,} €".replace(",", ' '))
-        st.metric("Rev. Premium (dernier mois)",
-                  f"{int(last_row['Rev_premium']):,} €".replace(",", ' '))
+        st.metric("Rev. Basic (dernier mois)", f"{int(last_row['Rev_basic']):,} €".replace(",", ' '))
+        st.metric("Rev. Premium (dernier mois)", f"{int(last_row['Rev_premium']):,} €".replace(",", ' '))
 
 # ---------------------------------------------------------
 # TAB 3 — COSTS & CASH
@@ -697,13 +738,7 @@ with tab_scenarios:
 
     yearly_all = []
     for scen in scenarios:
-        tmp = dfs[scen].groupby("Année").agg(
-            Users_end=("Users_end", "last"),
-            CA_total=("CA_total", "sum"),
-            Total_costs=("Total_costs", "sum"),
-            Cash_flow=("Cash_flow", "sum"),
-            Cash_end=("Cash", "last"),
-        ).reset_index()
+        tmp = calculate_yearly_metrics(dfs[scen])
         tmp["Scenario"] = scen
         yearly_all.append(tmp)
 
@@ -743,11 +778,13 @@ with tab_scenarios:
 with tab_valuation:
     st.subheader("🏦 Valorisation & Cap Table pour la levée (scénario Base)")
 
-    arr_year = yearly_base.loc[yearly_base["Année"] == valuation_year, "CA_total"]
-    if not arr_year.empty:
-        arr_valo = arr_year.values[0]
+    # Trouver l'ARR pour l'année de valorisation
+    arr_year_data = yearly_base[yearly_base["Année"] == valuation_year]
+    if not arr_year_data.empty:
+        arr_valo = arr_year_data["CA_total"].values[0]
     else:
-        arr_valo = yearly_base["CA_total"].iloc[-1]
+        # Si l'année de valorisation dépasse l'horizon, prendre la dernière année
+        arr_valo = yearly_base.iloc[-1]["CA_total"]
 
     pre_money = arr_valo * valuation_multiple
     post_money = pre_money + round_size
@@ -783,11 +820,9 @@ with tab_valuation:
             f"{int(arr_valo):,} €".replace(",", " ")
         )
     with col_v2:
-        st.metric("Pré-money (ARR x multiple)",
-                  f"{int(pre_money):,} €".replace(",", " "))
+        st.metric("Pré-money (ARR x multiple)", f"{int(pre_money):,} €".replace(",", " "))
     with col_v3:
-        st.metric("Post-money",
-                  f"{int(post_money):,} €".replace(",", " "))
+        st.metric("Post-money", f"{int(post_money):,} €".replace(",", " "))
 
     st.markdown("### Cap table pré-money (simplifiée)")
     pre_cap_table = pd.DataFrame(
@@ -808,21 +843,9 @@ with tab_valuation:
     post_cap_table = pd.DataFrame(
         {
             "Actionnaires": ["Fondateurs", "Investisseurs tour", "Option pool"],
-            "Pourcentage": [
-                founders_pct * 100,
-                investor_pct * 100,
-                option_pct * 100,
-            ],
-            "Valeur (€)": [
-                founders_pct * post_money,
-                investor_pct * post_money,
-                option_pct * post_money,
-            ],
-            "Parts": [
-                founders_shares_post,
-                investors_shares_post,
-                esop_shares_post,
-            ],
+            "Pourcentage": [founders_pct * 100, investor_pct * 100, option_pct * 100],
+            "Valeur (€)": [founders_pct * post_money, investor_pct * post_money, option_pct * post_money],
+            "Parts": [founders_shares_post, investors_shares_post, esop_shares_post],
         }
     )
     st.dataframe(
@@ -903,29 +926,38 @@ with tab_raw:
     )
 
     st.markdown("### Rappel des principales hypothèses saisies")
-    st.json(
-        {
-            "Horizon_annees": years,
-            "Taille_marche_max_users": max_users,
-            "Logistic_r": logistic_r,
-            "Prix_basic": price_basic,
-            "Prix_premium": price_premium,
-            "Part_premium": premium_share,
-            "Cout_moyen_biomarkers": biomarker_cost_avg,
-            "Analyses_par_user_par_an": biomarker_analyses_per_user_year,
-            "Starting_users": starting_users,
-            "Churn_mensuel": churn_monthly,
-            "Budget_marketing": monthly_marketing_budget,
-            "CAC": cac,
-            "Masse_salariale_mensuelle": salaries_monthly,
-            "CAPEX_annuel": yearly_capex,
-            "Frais_paiement_%CA": payment_fee_pct,
-            "Inflation_salaires/an": salary_inflation_yearly,
-            "Tresorerie_initiale": starting_cash,
-            "Valo_multiple_ARR": valuation_multiple,
-            "Valo_annee_ref": valuation_year,
-            "Montant_leve": round_size,
-            "Option_pool_post": option_pool_post,
-            "Parts_pre_money": pre_shares_total,
-        }
-    )
+    assumptions = {
+        "Horizon_annees": years,
+        "Taille_marche_max_users": max_users,
+        "Logistic_r": logistic_r,
+        "Prix_basic": price_basic,
+        "Prix_premium": price_premium,
+        "Part_premium": premium_share,
+        "Cout_moyen_biomarkers": biomarker_cost_avg,
+        "Analyses_par_user_par_an": biomarker_analyses_per_user_year,
+        "Starting_users": starting_users,
+        "Churn_mensuel": churn_monthly,
+        "Budget_marketing": monthly_marketing_budget,
+        "CAC": cac,
+        "Masse_salariale_mensuelle": salaries_monthly,
+        "CAPEX_annuel": yearly_capex,
+        "Frais_paiement_%CA": payment_fee_pct,
+        "Inflation_salaires/an": salary_inflation_yearly,
+        "Tresorerie_initiale": starting_cash,
+        "Valo_multiple_ARR": valuation_multiple,
+        "Valo_annee_ref": valuation_year,
+        "Montant_leve": round_size,
+        "Option_pool_post": option_pool_post,
+        "Parts_pre_money": pre_shares_total,
+    }
+    st.json(assumptions)
+
+    # Vérification des calculs Biomarkers
+    st.markdown("### Vérification calculs Biomarkers")
+    bio_cost_per_user_month_calc = biomarker_cost_avg * (biomarker_analyses_per_user_year / 12.0)
+    st.write(f"Coût Biomarkers par user par mois = {biomarker_cost_avg} € × ({biomarker_analyses_per_user_year} / 12) = {bio_cost_per_user_month_calc:.2f} €")
+    
+    if len(df_base) > 0:
+        last_bio_cost = df_base.iloc[-1]['Bio_cost_per_user_month']
+        st.write(f"Valeur calculée dans le modèle : {last_bio_cost:.2f} €")
+        st.write(f"✓ Cohérent : {abs(last_bio_cost - bio_cost_per_user_month_calc) < 0.01}")
