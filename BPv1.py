@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
 
 # =========================================================
 # CONFIG
@@ -12,7 +14,7 @@ st.set_page_config(
 )
 
 st.title("📊 Zolya — Business Plan & Financial Simulator")
-st.caption("Projections utilisateurs, revenus, coûts, trésorerie, scénarios, benchmarks & cap table — v8 corrigée")
+st.caption("Projections utilisateurs, revenus, coûts, trésorerie, scénarios, benchmarks & cap table — v9 avec Burn Curve et Cap Table dynamique")
 
 # =========================================================
 # SIDEBAR — HYPOTHÈSES GÉNÉRALES
@@ -477,7 +479,7 @@ yearly_base = calculate_yearly_metrics(df_base)
 # =========================================================
 # TABS
 # =========================================================
-tab_overview, tab_users, tab_costs, tab_pricing, tab_scenarios, tab_valuation, tab_bench, tab_raw = st.tabs(
+tab_overview, tab_users, tab_costs, tab_pricing, tab_scenarios, tab_valuation, tab_captable_dynamic, tab_burn, tab_bench, tab_raw = st.tabs(
     [
         "🏠 Overview",
         "👥 Users & Revenues", 
@@ -485,6 +487,8 @@ tab_overview, tab_users, tab_costs, tab_pricing, tab_scenarios, tab_valuation, t
         "🧮 Pricing Sensitivity",
         "🧪 Scenarios",
         "🏦 Valuation & Cap table",
+        "📈 Cap Table Dynamique",
+        "🔥 Burn & Depletion",
         "📊 Benchmarks",
         "📑 Données brutes & justifs",
     ]
@@ -855,7 +859,494 @@ with tab_valuation:
     )
 
 # ---------------------------------------------------------
-# TAB 7 — BENCHMARKS
+# TAB 7 — CAP TABLE DYNAMIQUE (MULTI-ROUNDS)
+# ---------------------------------------------------------
+with tab_captable_dynamic:
+    st.subheader("📈 Cap Table Dynamique avec Dilutions Multi-Rounds")
+    
+    st.markdown("""
+    **Comment ça marche:**
+    1. Configure les levées de fonds futures
+    2. Les pourcentages s'ajustent automatiquement à chaque dilution
+    3. L'option pool peut être reconstitué à chaque levée
+    4. Visualisation de l'évolution des parts dans le temps
+    """)
+    
+    # Configuration des tours de levée
+    st.markdown("### 🏦 Configuration des tours de levée")
+    
+    col_round1, col_round2, col_round3 = st.columns(3)
+    
+    with col_round1:
+        st.markdown("**Seed Round**")
+        seed_round = st.number_input("Montant Seed (€)", 0.0, 10_000_000.0, 1_000_000.0, 50_000.0, key="seed_round")
+        seed_val_mult = st.slider("Multiple valo Seed (x ARR)", 1.0, 10.0, 4.0, 0.5, key="seed_mult")
+        seed_year = st.slider("Année Seed", 1, years, 1, key="seed_year")
+    
+    with col_round2:
+        st.markdown("**Series A**")
+        series_a = st.number_input("Montant Series A (€)", 0.0, 20_000_000.0, 3_000_000.0, 100_000.0, key="series_a")
+        series_a_mult = st.slider("Multiple valo Series A (x ARR)", 2.0, 15.0, 6.0, 0.5, key="series_a_mult")
+        series_a_year = st.slider("Année Series A", 2, years, 3, key="series_a_year")
+    
+    with col_round3:
+        st.markdown("**Series B**")
+        series_b = st.number_input("Montant Series B (€)", 0.0, 50_000_000.0, 10_000_000.0, 500_000.0, key="series_b")
+        series_b_mult = st.slider("Multiple valo Series B (x ARR)", 3.0, 20.0, 8.0, 0.5, key="series_b_mult")
+        series_b_year = st.slider("Année Series B", 3, years, 5, key="series_b_year")
+    
+    # Paramètres généraux
+    st.markdown("### ⚙️ Paramètres généraux")
+    col_opt1, col_opt2 = st.columns(2)
+    
+    with col_opt1:
+        initial_esop = st.slider("Option pool initial (%)", 0.0, 30.0, 10.0, 0.5) / 100.0
+        esop_replenish = st.slider("Reconstitution option pool après levée (%)", 0.0, 15.0, 5.0, 0.5) / 100.0
+    
+    with col_opt2:
+        founders_initial_shares = st.number_input("Parts initiales fondateurs", 1, 10_000_000, 10_000, 100)
+        angels_percentage = st.slider("Business Angels initiaux (%)", 0.0, 30.0, 5.0, 0.5) / 100.0
+    
+    # Fonction pour calculer les dilutions
+    def calculate_cap_table_dynamic():
+        # Étape 1: Initial (avant Seed)
+        total_shares = founders_initial_shares
+        founders_shares = total_shares * (1 - initial_esop - angels_percentage)
+        angels_shares = total_shares * angels_percentage
+        esop_shares = total_shares * initial_esop
+        
+        cap_history = [{
+            'Round': 'Initial',
+            'Année': 0,
+            'Total Shares': total_shares,
+            'Fondateurs': founders_shares / total_shares * 100,
+            'Business Angels': angels_shares / total_shares * 100,
+            'Option Pool': esop_shares / total_shares * 100,
+            'Seed Investors': 0.0,
+            'Series A Investors': 0.0,
+            'Series B Investors': 0.0,
+            'Valorisation (€)': 0,
+            'Montant Levé (€)': 0,
+            'Price per Share (€)': 0
+        }]
+        
+        current_total_shares = total_shares
+        
+        # Seed Round
+        if seed_round > 0 and seed_year <= years:
+            # Trouver l'ARR pour l'année Seed
+            arr_seed_data = yearly_base[yearly_base["Année"] == seed_year]
+            arr_seed = arr_seed_data["CA_total"].values[0] if not arr_seed_data.empty else 0
+            
+            pre_money_seed = arr_seed * seed_val_mult
+            post_money_seed = pre_money_seed + seed_round
+            investor_pct_seed = seed_round / post_money_seed if post_money_seed > 0 else 0
+            
+            # Ajuster pour option pool
+            investor_pct_seed_adj = investor_pct_seed * (1 - esop_replenish)
+            esop_new_pct = esop_replenish
+            
+            # Calculer les nouvelles parts
+            price_per_share = pre_money_seed / current_total_shares if current_total_shares > 0 else 0
+            new_shares_seed = seed_round / price_per_share if price_per_share > 0 else 0
+            
+            # Dilution
+            dilution_factor = current_total_shares / (current_total_shares + new_shares_seed)
+            
+            # Mettre à jour les parts
+            current_total_shares = current_total_shares + new_shares_seed
+            
+            founders_shares *= dilution_factor * (1 - esop_new_pct)
+            angels_shares *= dilution_factor * (1 - esop_new_pct)
+            esop_shares = esop_shares * dilution_factor * (1 - esop_new_pct) + current_total_shares * esop_new_pct
+            seed_investors_shares = new_shares_seed * (1 - esop_new_pct)
+            
+            cap_history.append({
+                'Round': 'Seed',
+                'Année': seed_year,
+                'Total Shares': current_total_shares,
+                'Fondateurs': founders_shares / current_total_shares * 100,
+                'Business Angels': angels_shares / current_total_shares * 100,
+                'Option Pool': esop_shares / current_total_shares * 100,
+                'Seed Investors': seed_investors_shares / current_total_shares * 100,
+                'Series A Investors': 0.0,
+                'Series B Investors': 0.0,
+                'Valorisation (€)': post_money_seed,
+                'Montant Levé (€)': seed_round,
+                'Price per Share (€)': price_per_share
+            })
+        
+        # Series A
+        if series_a > 0 and series_a_year <= years:
+            # Mettre à jour les parts pour Series A
+            arr_series_a_data = yearly_base[yearly_base["Année"] == series_a_year]
+            arr_series_a = arr_series_a_data["CA_total"].values[0] if not arr_series_a_data.empty else 0
+            
+            pre_money_series_a = arr_series_a * series_a_mult
+            post_money_series_a = pre_money_series_a + series_a
+            investor_pct_series_a = series_a / post_money_series_a if post_money_series_a > 0 else 0
+            
+            # Ajuster pour option pool
+            investor_pct_series_a_adj = investor_pct_series_a * (1 - esop_replenish)
+            esop_new_pct_a = esop_replenish
+            
+            # Calculer les nouvelles parts
+            price_per_share_a = pre_money_series_a / current_total_shares if current_total_shares > 0 else 0
+            new_shares_a = series_a / price_per_share_a if price_per_share_a > 0 else 0
+            
+            # Dilution
+            dilution_factor_a = current_total_shares / (current_total_shares + new_shares_a)
+            
+            # Mettre à jour les parts
+            current_total_shares = current_total_shares + new_shares_a
+            
+            founders_shares *= dilution_factor_a * (1 - esop_new_pct_a)
+            angels_shares *= dilution_factor_a * (1 - esop_new_pct_a)
+            seed_investors_shares *= dilution_factor_a * (1 - esop_new_pct_a)
+            esop_shares = esop_shares * dilution_factor_a * (1 - esop_new_pct_a) + current_total_shares * esop_new_pct_a
+            series_a_shares = new_shares_a * (1 - esop_new_pct_a)
+            
+            cap_history.append({
+                'Round': 'Series A',
+                'Année': series_a_year,
+                'Total Shares': current_total_shares,
+                'Fondateurs': founders_shares / current_total_shares * 100,
+                'Business Angels': angels_shares / current_total_shares * 100,
+                'Option Pool': esop_shares / current_total_shares * 100,
+                'Seed Investors': seed_investors_shares / current_total_shares * 100,
+                'Series A Investors': series_a_shares / current_total_shares * 100,
+                'Series B Investors': 0.0,
+                'Valorisation (€)': post_money_series_a,
+                'Montant Levé (€)': series_a,
+                'Price per Share (€)': price_per_share_a
+            })
+        
+        # Series B
+        if series_b > 0 and series_b_year <= years:
+            # Mettre à jour les parts pour Series B
+            arr_series_b_data = yearly_base[yearly_base["Année"] == series_b_year]
+            arr_series_b = arr_series_b_data["CA_total"].values[0] if not arr_series_b_data.empty else 0
+            
+            pre_money_series_b = arr_series_b * series_b_mult
+            post_money_series_b = pre_money_series_b + series_b
+            investor_pct_series_b = series_b / post_money_series_b if post_money_series_b > 0 else 0
+            
+            # Ajuster pour option pool
+            investor_pct_series_b_adj = investor_pct_series_b * (1 - esop_replenish)
+            esop_new_pct_b = esop_replenish
+            
+            # Calculer les nouvelles parts
+            price_per_share_b = pre_money_series_b / current_total_shares if current_total_shares > 0 else 0
+            new_shares_b = series_b / price_per_share_b if price_per_share_b > 0 else 0
+            
+            # Dilution
+            dilution_factor_b = current_total_shares / (current_total_shares + new_shares_b)
+            
+            # Mettre à jour les parts
+            current_total_shares = current_total_shares + new_shares_b
+            
+            founders_shares *= dilution_factor_b * (1 - esop_new_pct_b)
+            angels_shares *= dilution_factor_b * (1 - esop_new_pct_b)
+            seed_investors_shares *= dilution_factor_b * (1 - esop_new_pct_b)
+            series_a_shares *= dilution_factor_b * (1 - esop_new_pct_b)
+            esop_shares = esop_shares * dilution_factor_b * (1 - esop_new_pct_b) + current_total_shares * esop_new_pct_b
+            series_b_shares = new_shares_b * (1 - esop_new_pct_b)
+            
+            cap_history.append({
+                'Round': 'Series B',
+                'Année': series_b_year,
+                'Total Shares': current_total_shares,
+                'Fondateurs': founders_shares / current_total_shares * 100,
+                'Business Angels': angels_shares / current_total_shares * 100,
+                'Option Pool': esop_shares / current_total_shares * 100,
+                'Seed Investors': seed_investors_shares / current_total_shares * 100,
+                'Series A Investors': series_a_shares / current_total_shares * 100,
+                'Series B Investors': series_b_shares / current_total_shares * 100,
+                'Valorisation (€)': post_money_series_b,
+                'Montant Levé (€)': series_b,
+                'Price per Share (€)': price_per_share_b
+            })
+        
+        return pd.DataFrame(cap_history)
+    
+    # Calculer et afficher la cap table dynamique
+    cap_table_dynamic = calculate_cap_table_dynamic()
+    
+    st.markdown("### 📊 Évolution de la Cap Table")
+    
+    # Tableau principal
+    display_cols = ['Round', 'Année', 'Fondateurs', 'Business Angels', 'Seed Investors', 
+                   'Series A Investors', 'Series B Investors', 'Option Pool', 
+                   'Valorisation (€)', 'Montant Levé (€)', 'Price per Share (€)']
+    
+    st.dataframe(
+        cap_table_dynamic[display_cols].style.format({
+            'Fondateurs': '{:.1f}%',
+            'Business Angels': '{:.1f}%',
+            'Seed Investors': '{:.1f}%',
+            'Series A Investors': '{:.1f}%',
+            'Series B Investors': '{:.1f}%',
+            'Option Pool': '{:.1f}%',
+            'Valorisation (€)': '{:,.0f}',
+            'Montant Levé (€)': '{:,.0f}',
+            'Price per Share (€)': '{:.2f}'
+        })
+    )
+    
+    # Graphique d'évolution
+    st.markdown("### 📈 Visualisation des dilutions")
+    
+    if not cap_table_dynamic.empty:
+        # Préparer les données pour le graphique
+        melt_df = pd.melt(cap_table_dynamic, 
+                         id_vars=['Round', 'Année'],
+                         value_vars=['Fondateurs', 'Business Angels', 'Seed Investors', 
+                                    'Series A Investors', 'Series B Investors', 'Option Pool'],
+                         var_name='Categorie', value_name='Pourcentage')
+        
+        fig_cap_evolution = px.area(melt_df, x='Année', y='Pourcentage', color='Categorie',
+                                   title='Évolution des pourcentages de capital',
+                                   category_orders={'Categorie': ['Fondateurs', 'Business Angels', 
+                                                                  'Seed Investors', 'Series A Investors',
+                                                                  'Series B Investors', 'Option Pool']})
+        st.plotly_chart(fig_cap_evolution, use_container_width=True)
+    
+    # Résumé pour les fondateurs
+    st.markdown("### 🎯 Impact sur les fondateurs")
+    
+    if not cap_table_dynamic.empty:
+        last_row = cap_table_dynamic.iloc[-1]
+        founders_final_pct = last_row['Fondateurs']
+        total_val = last_row['Valorisation (€)']
+        founders_value = total_val * founders_final_pct / 100
+        
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1:
+            st.metric("Part finale fondateurs", f"{founders_final_pct:.1f}%")
+        with col_f2:
+            st.metric("Valorisation finale", f"{total_val:,.0f} €".replace(",", " "))
+        with col_f3:
+            st.metric("Valeur des parts fondateurs", f"{founders_value:,.0f} €".replace(",", " "))
+
+# ---------------------------------------------------------
+# TAB 8 — BURN & DEPLETION CURVE
+# ---------------------------------------------------------
+with tab_burn:
+    st.subheader("🔥 Courbe de Burn Rate & Depletion")
+    
+    st.markdown("""
+    Cette analyse montre:
+    - **Burn Rate**: Combien d'argent vous dépensez chaque mois (négatif = perte)
+    - **Runway**: Combien de mois avant de manquer de cash
+    - **Cash Zero Date**: Date prévue où la trésorerie atteint 0
+    """)
+    
+    # Calculer le burn rate mensuel
+    df_base['Burn_Rate'] = -df_base['Cash_flow']  # Burn = cash flow négatif
+    df_base['Cumulative_Burn'] = df_base['Burn_Rate'].cumsum()
+    
+    # Trouver quand le cash atteint 0
+    cash_zero_idx = df_base[df_base['Cash'] <= 0].index.min()
+    if pd.isna(cash_zero_idx):
+        cash_zero_date = "Jamais (toujours positif)"
+        months_to_zero = "∞"
+    else:
+        months_to_zero = int(cash_zero_idx) + 1
+        # Calculer une date approximative
+        start_date = datetime.now()
+        zero_date = start_date + timedelta(days=months_to_zero*30)
+        cash_zero_date = zero_date.strftime("%d %B %Y")
+    
+    # Métriques clés
+    col_b1, col_b2, col_b3, col_b4 = st.columns(4)
+    
+    with col_b1:
+        avg_burn = df_base['Burn_Rate'].mean()
+        st.metric("Burn Rate moyen (€/mois)", f"{avg_burn:,.0f}".replace(",", " "))
+    
+    with col_b2:
+        max_burn = df_base['Burn_Rate'].max()
+        st.metric("Burn Rate max (€/mois)", f"{max_burn:,.0f}".replace(",", " "))
+    
+    with col_b3:
+        st.metric("Mois avant cash=0", str(months_to_zero))
+    
+    with col_b4:
+        st.metric("Date cash=0", cash_zero_date)
+    
+    # Graphique 1: Burn Rate et Trésorerie
+    st.markdown("### 📉 Burn Rate vs Trésorerie")
+    
+    fig_burn = go.Figure()
+    
+    # Burn Rate
+    fig_burn.add_trace(go.Bar(
+        x=df_base['Mois'],
+        y=df_base['Burn_Rate'],
+        name='Burn Rate (€/mois)',
+        marker_color='red',
+        opacity=0.6
+    ))
+    
+    # Trésorerie (axe secondaire)
+    fig_burn.add_trace(go.Scatter(
+        x=df_base['Mois'],
+        y=df_base['Cash'],
+        name='Trésorerie (€)',
+        yaxis='y2',
+        line=dict(color='green', width=3)
+    ))
+    
+    # Ligne zéro pour référence
+    fig_burn.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+    
+    fig_burn.update_layout(
+        title='Burn Rate mensuel et Évolution de la Trésorerie',
+        xaxis_title='Mois',
+        yaxis=dict(title='Burn Rate (€)', side='left'),
+        yaxis2=dict(
+            title='Trésorerie (€)',
+            side='right',
+            overlaying='y',
+            showgrid=False
+        ),
+        hovermode='x unified'
+    )
+    
+    st.plotly_chart(fig_burn, use_container_width=True)
+    
+    # Graphique 2: Runway Analysis
+    st.markdown("### ⏳ Analyse du Runway (Months of Runway)")
+    
+    # Calculer le runway à chaque mois
+    df_base['Monthly_Runway'] = df_base['Cash'] / df_base['Burn_Rate'].rolling(3, min_periods=1).mean()
+    df_base['Monthly_Runway'] = df_base['Monthly_Runway'].apply(lambda x: min(x, 60) if x > 0 else 0)  # Limiter à 60 mois pour lisibilité
+    
+    fig_runway = go.Figure()
+    
+    fig_runway.add_trace(go.Scatter(
+        x=df_base['Mois'],
+        y=df_base['Monthly_Runway'],
+        name='Months of Runway',
+        fill='tozeroy',
+        line=dict(color='orange', width=2),
+        fillcolor='rgba(255,165,0,0.2)'
+    ))
+    
+    # Zones de danger
+    fig_runway.add_hrect(y0=0, y1=3, line_width=0, fillcolor="red", opacity=0.2,
+                        annotation_text="Danger", annotation_position="top left")
+    fig_runway.add_hrect(y0=3, y1=6, line_width=0, fillcolor="yellow", opacity=0.2,
+                        annotation_text="Attention", annotation_position="top left")
+    fig_runway.add_hrect(y0=6, y1=12, line_width=0, fillcolor="lightgreen", opacity=0.2,
+                        annotation_text="Confortable", annotation_position="top left")
+    
+    fig_runway.update_layout(
+        title='Months of Runway (sur base du burn rate moyen glissant 3 mois)',
+        xaxis_title='Mois',
+        yaxis_title='Months of Runway',
+        hovermode='x'
+    )
+    
+    st.plotly_chart(fig_runway, use_container_width=True)
+    
+    # Graphique 3: Cumulative Burn vs Cumulative Revenue
+    st.markdown("### 💰 Burn Cumulé vs Revenus Cumulés")
+    
+    df_base['Cumulative_Revenue'] = df_base['CA_total'].cumsum()
+    df_base['Cumulative_Costs'] = df_base['Total_costs'].cumsum()
+    
+    fig_cumulative = go.Figure()
+    
+    fig_cumulative.add_trace(go.Scatter(
+        x=df_base['Mois'],
+        y=df_base['Cumulative_Revenue'],
+        name='Revenus Cumulés',
+        line=dict(color='green', width=3)
+    ))
+    
+    fig_cumulative.add_trace(go.Scatter(
+        x=df_base['Mois'],
+        y=df_base['Cumulative_Costs'],
+        name='Coûts Cumulés',
+        line=dict(color='red', width=3)
+    ))
+    
+    fig_cumulative.add_trace(go.Scatter(
+        x=df_base['Mois'],
+        y=df_base['Cumulative_Burn'],
+        name='Burn Cumulé',
+        line=dict(color='orange', width=2, dash='dash')
+    ))
+    
+    # Trouver le point de break-even
+    break_even_idx = df_base[df_base['Cumulative_Revenue'] >= df_base['Cumulative_Costs']].index.min()
+    if not pd.isna(break_even_idx):
+        break_even_month = int(break_even_idx) + 1
+        break_even_rev = df_base.loc[break_even_idx, 'Cumulative_Revenue']
+        fig_cumulative.add_vline(x=break_even_month, line_dash="dash", line_color="blue",
+                                annotation_text=f"Break-even: M{break_even_month}")
+    
+    fig_cumulative.update_layout(
+        title='Évolution Cumulée: Revenus vs Coûts vs Burn',
+        xaxis_title='Mois',
+        yaxis_title='Montant Cumulé (€)',
+        hovermode='x unified'
+    )
+    
+    st.plotly_chart(fig_cumulative, use_container_width=True)
+    
+    # Tableau détaillé du burn
+    st.markdown("### 📊 Tableau détaillé du Burn Rate")
+    
+    burn_summary = df_base[['Mois', 'Année', 'CA_total', 'Total_costs', 'Cash_flow', 'Burn_Rate', 'Cash']].copy()
+    burn_summary['Runway_Months'] = burn_summary['Cash'] / burn_summary['Burn_Rate'].rolling(3, min_periods=1).mean()
+    
+    st.dataframe(
+        burn_summary.style.format({
+            'CA_total': '{:,.0f}',
+            'Total_costs': '{:,.0f}',
+            'Cash_flow': '{:,.0f}',
+            'Burn_Rate': '{:,.0f}',
+            'Cash': '{:,.0f}',
+            'Runway_Months': '{:.1f}'
+        }).applymap(
+            lambda x: 'background-color: #ffcccc' if x < 0 and isinstance(x, (int, float)) else '',
+            subset=['Cash_flow', 'Burn_Rate']
+        ).applymap(
+            lambda x: 'background-color: #ff9999' if x < 3 and isinstance(x, (int, float)) else '',
+            subset=['Runway_Months']
+        )
+    )
+    
+    # Recommandations basées sur l'analyse
+    st.markdown("### 🎯 Recommandations basées sur l'analyse")
+    
+    avg_runway = burn_summary['Runway_Months'].mean()
+    
+    if avg_runway < 3:
+        st.error("**CRITIQUE:** Runway moyen < 3 mois. Actions immédiates nécessaires:")
+        st.write("1. Réduire drastiquement les coûts fixes")
+        st.write("2. Augmenter les prix ou réduire les coûts variables")
+        st.write("3. Préparer une levée d'urgence")
+    elif avg_runway < 6:
+        st.warning("**ATTENTION:** Runway moyen < 6 mois. Actions recommandées:")
+        st.write("1. Optimiser le marketing pour réduire le CAC")
+        st.write("2. Revoir la structure des coûts")
+        st.write("3. Planifier une levée dans les 3 mois")
+    elif avg_runway < 12:
+        st.info("**STABLE:** Runway moyen < 12 mois. Bonne position pour:")
+        st.write("1. Poursuivre la croissance organique")
+        st.write("2. Planifier une levée stratégique")
+        st.write("3. Investir dans des initiatives à long terme")
+    else:
+        st.success("**EXCELLENT:** Runway > 12 mois. Vous pouvez:")
+        st.write("1. Focus sur croissance agressive")
+        st.write("2. Investir en R&D")
+        st.write("3. Préparer un scale-up")
+
+# ---------------------------------------------------------
+# TAB 9 — BENCHMARKS
 # ---------------------------------------------------------
 with tab_bench:
     st.subheader("📊 Benchmarks marché & multiples (indicatifs)")
@@ -906,7 +1397,7 @@ with tab_bench:
     st.dataframe(mult_df)
 
 # ---------------------------------------------------------
-# TAB 8 — RAW DATA & EXPORT
+# TAB 10 — RAW DATA & EXPORT
 # ---------------------------------------------------------
 with tab_raw:
     st.subheader("📑 Données brutes — scénario Base")
@@ -922,6 +1413,25 @@ with tab_raw:
         label="Télécharger les projections mensuelles (Base) en CSV",
         data=csv,
         file_name="zolya_bp_projections_mensuelles_base.csv",
+        mime="text/csv",
+    )
+    
+    # Export de la cap table dynamique
+    if 'cap_table_dynamic' in locals():
+        csv_cap = cap_table_dynamic.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Télécharger la cap table dynamique en CSV",
+            data=csv_cap,
+            file_name="zolya_cap_table_dynamique.csv",
+            mime="text/csv",
+        )
+    
+    # Export de l'analyse burn
+    csv_burn = burn_summary.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="Télécharger l'analyse burn rate en CSV",
+        data=csv_burn,
+        file_name="zolya_burn_analysis.csv",
         mime="text/csv",
     )
 
