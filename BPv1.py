@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 st.title("📊 Zolya — Business Plan & Financial Simulator")
-st.caption("Projections utilisateurs, revenus, coûts, trésorerie, scénarios, benchmarks & cap table — v9 avec Burn Curve et Cap Table dynamique")
+st.caption("Projections utilisateurs, revenus, coûts, trésorerie, scénarios, benchmarks & cap table — v10 avec Burn Curve, Cap Table dynamique, Levée et Structure EU")
 
 # =========================================================
 # SIDEBAR — HYPOTHÈSES GÉNÉRALES
@@ -477,10 +477,12 @@ df_base = dfs["Base"]
 yearly_base = calculate_yearly_metrics(df_base)
 
 # =========================================================
-# TABS
+# TABS MIS À JOUR
 # =========================================================
-tab_overview, tab_users, tab_costs, tab_pricing, tab_scenarios, tab_valuation, tab_captable_dynamic, tab_burn, tab_bench, tab_raw = st.tabs(
+tab_europe, tab_fundraising, tab_overview, tab_users, tab_costs, tab_pricing, tab_scenarios, tab_valuation, tab_captable_dynamic, tab_burn, tab_bench, tab_raw = st.tabs(
     [
+        "🇪🇺 Structure Européenne",
+        "💰 Levée & Capital", 
         "🏠 Overview",
         "👥 Users & Revenues", 
         "💸 Costs & Cash",
@@ -495,7 +497,389 @@ tab_overview, tab_users, tab_costs, tab_pricing, tab_scenarios, tab_valuation, t
 )
 
 # ---------------------------------------------------------
-# TAB 1 — OVERVIEW (CORRIGÉ)
+# TAB 1 — STRUCTURE EUROPÉENNE
+# ---------------------------------------------------------
+with tab_europe:
+    st.subheader("🇪🇺 Gestion de Trésorerie & Structure Holding Européenne")
+    
+    st.markdown("""
+    ### 📋 Vision Future : Structure Multi-Entités
+    
+    **Architecture proposée :**
+    1. **Holding France** : Propriétaire de l'IP, stratégie groupe
+    2. **OpCo France** : Opérations commerciales France
+    3. **OpCo Allemagne** : Expansion DACH region
+    4. **OpCo UK** : Marché anglophone
+    5. **OpCo Espagne** : Marché sud-européen
+    """)
+    
+    # Configuration de la structure
+    st.markdown("### ⚙️ Configuration des Filiales")
+    
+    col_e1, col_e2, col_e3 = st.columns(3)
+    
+    with col_e1:
+        fr_revenue_share = st.slider("Part CA France (%)", 0, 100, 60, 5, key="fr_share")
+        de_revenue_share = st.slider("Part CA Allemagne (%)", 0, 100, 20, 5, key="de_share")
+    
+    with col_e2:
+        uk_revenue_share = st.slider("Part CA UK (%)", 0, 100, 10, 5, key="uk_share")
+        es_revenue_share = st.slider("Part CA Espagne (%)", 0, 100, 10, 5, key="es_share")
+    
+    with col_e3:
+        # Vérification cohérence
+        total_share = fr_revenue_share + de_revenue_share + uk_revenue_share + es_revenue_share
+        if total_share != 100:
+            st.warning(f"Total: {total_share}%. Normaliser à 100%")
+        else:
+            st.success("Répartition OK")
+    
+    # Simulation de trésorerie par entité
+    st.markdown("### 💰 Simulation de Trésorerie par Entité")
+    
+    # Créer un dataframe pour la simulation
+    months_sim = min(24, months)
+    entities = ['Holding', 'France', 'Allemagne', 'UK', 'Espagne']
+    
+    cash_simulation = []
+    for m in range(1, months_sim + 1):
+        # Répartition hypothétique des revenus
+        total_rev = df_base[df_base['Mois'] == m]['CA_total'].values[0] if m <= len(df_base) else 0
+        
+        cash_simulation.append({
+            'Mois': m,
+            'Holding': starting_cash * 0.2,  # 20% dans holding
+            'France': (total_rev * fr_revenue_share/100) * 0.8,  # 80% des revenus France
+            'Allemagne': (total_rev * de_revenue_share/100) * 0.7,
+            'UK': (total_rev * uk_revenue_share/100) * 0.7,
+            'Espagne': (total_rev * es_revenue_share/100) * 0.7
+        })
+    
+    cash_df = pd.DataFrame(cash_simulation)
+    
+    # Graphique de trésorerie par entité
+    fig_europe_cash = go.Figure()
+    
+    colors = ['#636efa', '#ef553b', '#00cc96', '#ab63fa', '#ffa15a']
+    
+    for i, entity in enumerate(entities[1:]):  # Exclure Holding pour plus de clarté
+        fig_europe_cash.add_trace(go.Scatter(
+            x=cash_df['Mois'],
+            y=cash_df[entity],
+            name=entity,
+            line=dict(color=colors[i % len(colors)], width=2),
+            stackgroup='one'  # Pour un graphique empilé
+        ))
+    
+    fig_europe_cash.update_layout(
+        title='Trésorerie projetée par filiale (24 mois)',
+        xaxis_title='Mois',
+        yaxis_title='Trésorerie (€)',
+        hovermode='x unified'
+    )
+    
+    st.plotly_chart(fig_europe_cash, use_container_width=True)
+    
+    # Tableau de bord de gestion
+    st.markdown("### 📊 Tableau de Bord Gestion Holding")
+    
+    col_hold1, col_hold2, col_hold3, col_hold4 = st.columns(4)
+    
+    with col_hold1:
+        total_cash = cash_df.iloc[-1][entities].sum()
+        st.metric("Trésorerie groupe totale", f"{total_cash:,.0f}€")
+    
+    with col_hold2:
+        holding_cash = cash_df.iloc[-1]['Holding']
+        st.metric("Cash Holding", f"{holding_cash:,.0f}€")
+    
+    with col_hold3:
+        # Calculer le besoin en cash working capital
+        avg_monthly_burn = df_base['Cash_flow'].mean() * -1 if df_base['Cash_flow'].mean() < 0 else 0
+        wc_needs = avg_monthly_burn * 3  # 3 mois de runway par entité
+        st.metric("Besoin WC (3 mois)", f"{wc_needs:,.0f}€")
+    
+    with col_hold4:
+        # Efficacité cash par marché
+        cash_per_market = cash_df.iloc[-1][['France', 'Allemagne', 'UK', 'Espagne']].sum() / 4
+        st.metric("Cash moyen/filiale", f"{cash_per_market:,.0f}€")
+    
+    # Optimisation fiscale et juridique
+    st.markdown("### ⚖️ Optimisation Structurelle")
+    
+    col_opt1, col_opt2 = st.columns(2)
+    
+    with col_opt1:
+        st.markdown("**Avantages Holding :**")
+        st.write("""
+        - Consolidation fiscale
+        - Optimisation TVA intra-communautaire
+        - Mutualisation des services (legal, finance, HR)
+        - Gestion centralisée de la trésorerie
+        - Effet de levier pour financement
+        """)
+    
+    with col_opt2:
+        st.markdown("**Recommandations :**")
+        st.write("""
+        - Holding en France (régime mère-fille)
+        - Facturation intra-groupe au coût
+        - Centralisation R&D dans Holding (CIR)
+        - Filiales avec capital minimum local
+        - Convention de trésorerie groupée
+        """)
+    
+    # Cash pooling simulation
+    st.markdown("### 🔄 Simulation Cash Pooling")
+    
+    cash_pooling_data = []
+    for m in range(1, min(13, months_sim + 1)):  # 12 mois max
+        month_data = {
+            'Mois': m,
+            'Excédent France': max(0, cash_df.iloc[m-1]['France'] - 50000),
+            'Déficit Allemagne': max(0, 50000 - cash_df.iloc[m-1]['Allemagne']),
+            'Transfert Optimal': min(
+                max(0, cash_df.iloc[m-1]['France'] - 50000),
+                max(0, 50000 - cash_df.iloc[m-1]['Allemagne'])
+            )
+        }
+        cash_pooling_data.append(month_data)
+    
+    pooling_df = pd.DataFrame(cash_pooling_data)
+    
+    fig_pooling = go.Figure()
+    
+    fig_pooling.add_trace(go.Bar(
+        x=pooling_df['Mois'],
+        y=pooling_df['Excédent France'],
+        name='Excédent France',
+        marker_color='green'
+    ))
+    
+    fig_pooling.add_trace(go.Bar(
+        x=pooling_df['Mois'],
+        y=pooling_df['Déficit Allemagne'],
+        name='Déficit Allemagne',
+        marker_color='red'
+    ))
+    
+    fig_pooling.add_trace(go.Scatter(
+        x=pooling_df['Mois'],
+        y=pooling_df['Transfert Optimal'],
+        name='Transfert Optimal',
+        line=dict(color='blue', width=3),
+        mode='lines+markers'
+    ))
+    
+    fig_pooling.update_layout(
+        title='Optimisation Cash Pooling France-Allemagne (k€)',
+        barmode='group',
+        xaxis_title='Mois',
+        yaxis_title='Montant (k€)'
+    )
+    
+    st.plotly_chart(fig_pooling, use_container_width=True)
+    
+    # Export pour plan financier
+    st.markdown("### 📤 Export pour Plan Financier")
+    
+    csv_europe = cash_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="📥 Télécharger simulation trésorerie EU",
+        data=csv_europe,
+        file_name="zolya_simulation_tresorerie_europe.csv",
+        mime="text/csv"
+    )
+
+# ---------------------------------------------------------
+# TAB 2 — LEVÉE & CAPITAL
+# ---------------------------------------------------------
+with tab_fundraising:
+    st.subheader("💰 Allocation du Capital Levé - Healthcare B2B2C")
+    
+    # Données d'allocation typique pour HealthTech B2B2C
+    allocation_data = pd.DataFrame({
+        'Catégorie': [
+            'R&D Produit (40%)',
+            'Marketing & Sales (25%)',
+            'Équipe & Opérations (20%)',
+            'Biomarkers & Labo (10%)',
+            'Fonds de roulement (5%)'
+        ],
+        'Pourcentage': [40, 25, 20, 10, 5],
+        'Description': [
+            'Développement plateforme, IA, features',
+            'Acquisition clients B2B et B2C, branding',
+            'Salaires, recrutement, frais généraux',
+            'Tests biomarkers, partenariats labo',
+            'Trésorerie opérationnelle, imprévus'
+        ],
+        'Montant (€)': [round_size * 0.40, round_size * 0.25, 
+                       round_size * 0.20, round_size * 0.10, round_size * 0.05]
+    })
+    
+    col_d1, col_d2 = st.columns([2, 1])
+    
+    with col_d1:
+        # Donut Chart
+        fig_donut = px.pie(
+            allocation_data,
+            values='Pourcentage',
+            names='Catégorie',
+            hole=0.4,
+            color_discrete_sequence=px.colors.sequential.RdBu,
+            title=f"Allocation des {round_size:,.0f}€ levés"
+        )
+        
+        fig_donut.update_traces(
+            textposition='inside',
+            textinfo='percent+label',
+            hovertemplate='<b>%{label}</b><br>' +
+                         'Montant: %{value:.1f}%<br>' +
+                         '€%{customdata:,.0f}<extra></extra>',
+            customdata=allocation_data['Montant (€)']
+        )
+        
+        fig_donut.update_layout(
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=-0.2,
+                xanchor="center",
+                x=0.5
+            )
+        )
+        
+        st.plotly_chart(fig_donut, use_container_width=True)
+    
+    with col_d2:
+        st.markdown("### 🎯 Détail de l'allocation")
+        
+        for idx, row in allocation_data.iterrows():
+            with st.expander(f"{row['Catégorie']} - {row['Montant (€)']:,.0f}€"):
+                st.write(f"**Description :** {row['Description']}")
+                
+                # Détails spécifiques par catégorie
+                if "R&D" in row['Catégorie']:
+                    st.write("""
+                    **Détail :**
+                    - 60% : Développeurs full-stack & data scientists
+                    - 20% : Infrastructure cloud & sécurité
+                    - 15% : R&D biomarkers & algorithmes IA
+                    - 5% : Propriété intellectuelle & certifications
+                    """)
+                elif "Marketing" in row['Catégorie']:
+                    st.write("""
+                    **Détail :**
+                    - 40% : Acquisition B2B (cliniques, entreprises)
+                    - 35% : Acquisition B2C (marketing digital)
+                    - 15% : Branding & contenu santé
+                    - 10% : Partenariats & relations publiques
+                    """)
+                elif "Équipe" in row['Catégorie']:
+                    st.write("""
+                    **Détail :**
+                    - 50% : Salaires & charges
+                    - 30% : Recrutement & formation
+                    - 15% : Bureaux & équipements
+                    - 5% : Avantages & bien-être
+                    """)
+                elif "Biomarkers" in row['Catégorie']:
+                    st.write("""
+                    **Détail :**
+                    - 70% : Tests biomarkers & analyses labo
+                    - 20% : Recherche & validation scientifique
+                    - 10% : Partenariats avec laboratoires
+                    """)
+                elif "Fonds" in row['Catégorie']:
+                    st.write("""
+                    **Détail :**
+                    - 60% : Trésorerie opérationnelle (3-6 mois)
+                    - 30% : Imprévus & opportunités
+                    - 10% : Frais bancaires & assurance
+                    """)
+    
+    # Timeline de déploiement
+    st.markdown("### 📅 Timeline de déploiement du capital")
+    
+    timeline_data = {
+        'Phase': ['M1-M3', 'M4-M6', 'M7-M12', 'M13-M18', 'M19-M24'],
+        'Focus': [
+            'Recrutement & R&D initiale',
+            'Développement MVP & tests marché',
+            'Lancement commercial & acquisition',
+            'Scale-up & optimisation',
+            'Expansion & internationalisation'
+        ],
+        'Budget (%)': [25, 20, 30, 15, 10],
+        'Principales Dépenses': [
+            'Salaires, outils, labo',
+            'Dev produit, tests biomarkers',
+            'Marketing, CAC, partenariats',
+            'Scale infrastructure, recrutement',
+            'Nouveaux marchés, R&D avancée'
+        ]
+    }
+    
+    timeline_df = pd.DataFrame(timeline_data)
+    timeline_df['Budget (€)'] = timeline_df['Budget (%)'] / 100 * round_size
+    
+    fig_timeline = px.bar(
+        timeline_df,
+        x='Phase',
+        y='Budget (%)',
+        hover_data=['Budget (€)', 'Focus', 'Principales Dépenses'],
+        color='Budget (%)',
+        color_continuous_scale='Viridis',
+        title='Déploiement du capital sur 24 mois'
+    )
+    
+    st.plotly_chart(fig_timeline, use_container_width=True)
+    
+    # Comparaison avec les benchmarks du secteur
+    st.markdown("### 📊 Benchmarks d'allocation HealthTech B2B2C")
+    
+    benchmark_data = pd.DataFrame({
+        'Catégorie': ['R&D', 'Sales & Marketing', 'G&A', 'Clinical/Lab'],
+        'Zolya (proposé)': [40, 25, 25, 10],
+        'Moyenne secteur': [35, 30, 25, 10],
+        'Best-in-class': [45, 25, 20, 10]
+    })
+    
+    fig_bench = go.Figure()
+    
+    fig_bench.add_trace(go.Bar(
+        name='Zolya',
+        x=benchmark_data['Catégorie'],
+        y=benchmark_data['Zolya (proposé)'],
+        marker_color='#636efa'
+    ))
+    
+    fig_bench.add_trace(go.Bar(
+        name='Moyenne secteur',
+        x=benchmark_data['Catégorie'],
+        y=benchmark_data['Moyenne secteur'],
+        marker_color='#ef553b'
+    ))
+    
+    fig_bench.add_trace(go.Bar(
+        name='Best-in-class',
+        x=benchmark_data['Catégorie'],
+        y=benchmark_data['Best-in-class'],
+        marker_color='#00cc96'
+    ))
+    
+    fig_bench.update_layout(
+        title='Comparaison avec les benchmarks du secteur',
+        barmode='group',
+        yaxis_title='Pourcentage (%)'
+    )
+    
+    st.plotly_chart(fig_bench, use_container_width=True)
+
+# ---------------------------------------------------------
+# TAB 3 — OVERVIEW (CORRIGÉ)
 # ---------------------------------------------------------
 with tab_overview:
     st.subheader("Vue d'ensemble — scénario Base")
@@ -561,7 +945,7 @@ with tab_overview:
         st.plotly_chart(fig_rev, use_container_width=True)
 
 # ---------------------------------------------------------
-# TAB 2 — USERS & REVENUES
+# TAB 4 — USERS & REVENUES
 # ---------------------------------------------------------
 with tab_users:
     st.subheader("👥 Utilisateurs & Revenus — scénario Base")
@@ -596,7 +980,7 @@ with tab_users:
         st.metric("Rev. Premium (dernier mois)", f"{int(last_row['Rev_premium']):,} €".replace(",", ' '))
 
 # ---------------------------------------------------------
-# TAB 3 — COSTS & CASH
+# TAB 5 — COSTS & CASH
 # ---------------------------------------------------------
 with tab_costs:
     st.subheader("💸 Coûts, Opex, CAPEX & Trésorerie — Base")
@@ -668,7 +1052,7 @@ with tab_costs:
         st.write(f"LTV / CAC ≈ {ltv_cac_ratio:.1f}x")
 
 # ---------------------------------------------------------
-# TAB 4 — PRICING SENSITIVITY (BREAK-EVEN)
+# TAB 6 — PRICING SENSITIVITY (BREAK-EVEN)
 # ---------------------------------------------------------
 with tab_pricing:
     st.subheader("🧮 Sensibilité Prix Basic / Premium → rentabilité par utilisateur")
@@ -735,7 +1119,7 @@ with tab_pricing:
         )
 
 # ---------------------------------------------------------
-# TAB 5 — SCENARIOS
+# TAB 7 — SCENARIOS
 # ---------------------------------------------------------
 with tab_scenarios:
     st.subheader("🧪 Comparaison de scénarios Safe / Base / Moonshot")
@@ -777,7 +1161,7 @@ with tab_scenarios:
     st.plotly_chart(fig_scen_cash, use_container_width=True)
 
 # ---------------------------------------------------------
-# TAB 6 — VALUATION & CAP TABLE
+# TAB 8 — VALUATION & CAP TABLE
 # ---------------------------------------------------------
 with tab_valuation:
     st.subheader("🏦 Valorisation & Cap Table pour la levée (scénario Base)")
@@ -859,7 +1243,7 @@ with tab_valuation:
     )
 
 # ---------------------------------------------------------
-# TAB 7 — CAP TABLE DYNAMIQUE (MULTI-ROUNDS)
+# TAB 9 — CAP TABLE DYNAMIQUE (MULTI-ROUNDS)
 # ---------------------------------------------------------
 with tab_captable_dynamic:
     st.subheader("📈 Cap Table Dynamique avec Dilutions Multi-Rounds")
@@ -1129,91 +1513,131 @@ with tab_captable_dynamic:
             st.metric("Valeur des parts fondateurs", f"{founders_value:,.0f} €".replace(",", " "))
 
 # ---------------------------------------------------------
-# TAB 8 — BURN & DEPLETION CURVE
+# TAB 10 — BURN & DEPLETION CURVE (AMÉLIORÉ)
 # ---------------------------------------------------------
 with tab_burn:
-    st.subheader("🔥 Courbe de Burn Rate & Depletion")
+    st.subheader("🔥 Courbe de Burn Rate & Depletion - KPI Clarifiés")
     
     st.markdown("""
-    Cette analyse montre:
-    - **Burn Rate**: Combien d'argent vous dépensez chaque mois (négatif = perte)
-    - **Runway**: Combien de mois avant de manquer de cash
-    - **Cash Zero Date**: Date prévue où la trésorerie atteint 0
+    ### 📊 Clarification des KPI de Trésorerie
+    
+    **Différence entre les concepts :**
+    
+    | Concept | Définition | Formule (simplifiée) | Utilité |
+    |---------|------------|----------------------|---------|
+    | **Burn Rate** | Dépenses mensuelles nettes (perte) | - (Revenus - Coûts) | Suivi mensuel de la consommation de cash |
+    | **Cash Zero Date** | Date où trésorerie atteint 0 | M0 + (Cash / Burn Rate moyen) | Planification des levées de fonds |
+    | **Runway** | Nombre de mois avant cash=0 | Cash / Burn Rate moyen | Durée de survie sans levée |
+    | **Break-even** | Moment où revenus = coûts | Cumul(Revenus) = Cumul(Coûts) | Point de rentabilité opérationnelle |
+    | **Trésorerie à 0 après X mois** | Cash final projeté après X mois | Cash initial + Σ(Cash Flow) | Vision à horizon fixé |
+    
+    ---
     """)
     
-    # Calculer le burn rate mensuel
+    # Calculer les KPI
     df_base['Burn_Rate'] = -df_base['Cash_flow']  # Burn = cash flow négatif
-    df_base['Cumulative_Burn'] = df_base['Burn_Rate'].cumsum()
+    df_base['Cumul_CA'] = df_base['CA_total'].cumsum()
+    df_base['Cumul_Couts'] = df_base['Total_costs'].cumsum()
     
-    # Trouver quand le cash atteint 0
-    cash_zero_idx = df_base[df_base['Cash'] <= 0].index.min()
-    if pd.isna(cash_zero_idx):
-        cash_zero_date = "Jamais (toujours positif)"
-        months_to_zero = "∞"
-    else:
-        months_to_zero = int(cash_zero_idx) + 1
-        # Calculer une date approximative
-        start_date = datetime.now()
-        zero_date = start_date + timedelta(days=months_to_zero*30)
-        cash_zero_date = zero_date.strftime("%d %B %Y")
+    # Création d'un dashboard KPI clair
+    col_kpi1, col_kpi2, col_kpi3, col_kpi4, col_kpi5 = st.columns(5)
     
-    # Métriques clés
-    col_b1, col_b2, col_b3, col_b4 = st.columns(4)
-    
-    with col_b1:
+    with col_kpi1:
         avg_burn = df_base['Burn_Rate'].mean()
-        st.metric("Burn Rate moyen (€/mois)", f"{avg_burn:,.0f}".replace(",", " "))
+        st.metric("🔥 Burn Rate moyen", f"{avg_burn:,.0f}€", 
+                 help="Dépenses mensuelles nettes moyennes (négatif = perte)")
     
-    with col_b2:
-        max_burn = df_base['Burn_Rate'].max()
-        st.metric("Burn Rate max (€/mois)", f"{max_burn:,.0f}".replace(",", " "))
+    with col_kpi2:
+        current_cash = df_base['Cash'].iloc[-1]
+        current_burn = df_base['Burn_Rate'].iloc[-1]
+        if current_burn > 0:
+            runway = current_cash / current_burn
+        else:
+            runway = float('inf')
+        st.metric("⏳ Runway actuel", f"{runway:.1f} mois" if runway != float('inf') else "∞",
+                 help="Mois restants avant cash=0 au rythme actuel")
     
-    with col_b3:
-        st.metric("Mois avant cash=0", str(months_to_zero))
+    with col_kpi3:
+        # Trouver le mois de break-even (cumulé)
+        break_even_idx = df_base[df_base['Cumul_CA'] >= df_base['Cumul_Couts']].index.min()
+        if pd.isna(break_even_idx):
+            st.metric("⚖️ Break-even", "Jamais", delta="Non atteint")
+        else:
+            break_even_month = int(break_even_idx) + 1
+            st.metric("⚖️ Break-even", f"M{break_even_month}", 
+                     delta=f"Année {(break_even_month-1)//12 + 1}")
     
-    with col_b4:
-        st.metric("Date cash=0", cash_zero_date)
+    with col_kpi4:
+        # Trésorerie à différents horizons
+        horizon_6m = df_base[df_base['Mois'] <= 6]['Cash'].iloc[-1] if len(df_base[df_base['Mois'] <= 6]) > 0 else 0
+        horizon_12m = df_base[df_base['Mois'] <= 12]['Cash'].iloc[-1] if len(df_base[df_base['Mois'] <= 12]) > 0 else 0
+        st.metric("💰 Trésorerie 12m", f"{horizon_12m:,.0f}€", 
+                 delta=f"{horizon_12m - horizon_6m:,.0f}€ vs 6m")
     
-    # Graphique 1: Burn Rate et Trésorerie
-    st.markdown("### 📉 Burn Rate vs Trésorerie")
+    with col_kpi5:
+        # Cash zero date
+        cash_zero_idx = df_base[df_base['Cash'] <= 0].index.min()
+        if pd.isna(cash_zero_idx):
+            st.metric("📅 Cash Zero", "Jamais", delta="Toujours positif")
+        else:
+            cash_zero_month = int(cash_zero_idx) + 1
+            st.metric("📅 Cash Zero", f"M{cash_zero_month}", 
+                     delta=f"Dans {cash_zero_month - df_base['Mois'].iloc[0]} mois")
     
-    fig_burn = go.Figure()
+    # Visualisation comparative
+    st.markdown("### 📈 Visualisation comparative des KPI")
     
-    # Burn Rate
-    fig_burn.add_trace(go.Bar(
-        x=df_base['Mois'],
-        y=df_base['Burn_Rate'],
-        name='Burn Rate (€/mois)',
-        marker_color='red',
-        opacity=0.6
-    ))
+    fig_comparative = go.Figure()
     
-    # Trésorerie (axe secondaire)
-    fig_burn.add_trace(go.Scatter(
+    # Ajouter les différentes courbes
+    fig_comparative.add_trace(go.Scatter(
         x=df_base['Mois'],
         y=df_base['Cash'],
-        name='Trésorerie (€)',
-        yaxis='y2',
+        name='Trésorerie',
         line=dict(color='green', width=3)
     ))
     
-    # Ligne zéro pour référence
-    fig_burn.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+    fig_comparative.add_trace(go.Scatter(
+        x=df_base['Mois'],
+        y=df_base['Burn_Rate'],
+        name='Burn Rate',
+        yaxis='y2',
+        line=dict(color='red', width=2),
+        opacity=0.7
+    ))
     
-    fig_burn.update_layout(
-        title='Burn Rate mensuel et Évolution de la Trésorerie',
+    fig_comparative.add_trace(go.Scatter(
+        x=df_base['Mois'],
+        y=df_base['Cumul_CA'] - df_base['Cumul_Couts'],
+        name='Marge Cumulée',
+        line=dict(color='blue', width=2, dash='dot'),
+        opacity=0.7
+    ))
+    
+    # Ajouter les lignes de référence
+    fig_comparative.add_hline(y=0, line_dash="dash", line_color="gray", 
+                             annotation_text="Cash = 0", annotation_position="bottom right")
+    
+    # Marquer le break-even
+    if not pd.isna(break_even_idx):
+        be_month = break_even_idx + 1
+        be_value = df_base.loc[break_even_idx, 'Cumul_CA'] - df_base.loc[break_even_idx, 'Cumul_Couts']
+        fig_comparative.add_vline(x=be_month, line_dash="dot", line_color="blue",
+                                 annotation_text=f"Break-even M{int(be_month)}")
+    
+    fig_comparative.update_layout(
+        title='Comparaison Trésorerie vs Burn Rate vs Marge Cumulée',
         xaxis_title='Mois',
-        yaxis=dict(title='Burn Rate (€)', side='left'),
+        yaxis=dict(title='Trésorerie / Marge Cumulée (€)'),
         yaxis2=dict(
-            title='Trésorerie (€)',
-            side='right',
+            title='Burn Rate (€/mois)',
             overlaying='y',
-            showgrid=False
+            side='right'
         ),
         hovermode='x unified'
     )
     
-    st.plotly_chart(fig_burn, use_container_width=True)
+    st.plotly_chart(fig_comparative, use_container_width=True)
     
     # Graphique 2: Runway Analysis
     st.markdown("### ⏳ Analyse du Runway (Months of Runway)")
@@ -1255,6 +1679,7 @@ with tab_burn:
     
     df_base['Cumulative_Revenue'] = df_base['CA_total'].cumsum()
     df_base['Cumulative_Costs'] = df_base['Total_costs'].cumsum()
+    df_base['Cumulative_Burn'] = df_base['Burn_Rate'].cumsum()
     
     fig_cumulative = go.Figure()
     
@@ -1280,7 +1705,6 @@ with tab_burn:
     ))
     
     # Trouver le point de break-even
-    break_even_idx = df_base[df_base['Cumulative_Revenue'] >= df_base['Cumulative_Costs']].index.min()
     if not pd.isna(break_even_idx):
         break_even_month = int(break_even_idx) + 1
         break_even_rev = df_base.loc[break_even_idx, 'Cumulative_Revenue']
@@ -1346,7 +1770,7 @@ with tab_burn:
         st.write("3. Préparer un scale-up")
 
 # ---------------------------------------------------------
-# TAB 9 — BENCHMARKS
+# TAB 11 — BENCHMARKS
 # ---------------------------------------------------------
 with tab_bench:
     st.subheader("📊 Benchmarks marché & multiples (indicatifs)")
@@ -1397,7 +1821,7 @@ with tab_bench:
     st.dataframe(mult_df)
 
 # ---------------------------------------------------------
-# TAB 10 — RAW DATA & EXPORT
+# TAB 12 — RAW DATA & EXPORT
 # ---------------------------------------------------------
 with tab_raw:
     st.subheader("📑 Données brutes — scénario Base")
